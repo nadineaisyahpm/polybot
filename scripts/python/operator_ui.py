@@ -15,7 +15,7 @@ import os
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 # Ensure the repo root is importable when run directly as a script.
@@ -23,19 +23,13 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from agents.research.journal import (  # noqa: E402
-    DEFAULT_DB_PATH as FORECAST_DB_PATH,
-    ForecastJournal,
-    ForecastRecord,
-)
-from agents.research.paper_trading import (  # noqa: E402
-    DEFAULT_DB_PATH as PAPER_DB_PATH,
-    PAPER_LABEL,
-    PaperTrade,
-    PaperTradingJournal,
-    Position,
-)
-from agents.research.risk import DEFAULT_LIMITS  # noqa: E402
+FORECAST_DB_PATH = "local_db_research.sqlite3"
+PAPER_DB_PATH = "local_db_paper_trading.sqlite3"
+PAPER_LABEL = "PAPER/SIMULATED"
+
+if TYPE_CHECKING:
+    from agents.research.journal import ForecastRecord
+    from agents.research.paper_trading import PaperTrade, Position
 
 
 def _as_float(value: Any) -> float | None:
@@ -115,6 +109,8 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
         }
 
     if path == "/api/risk-limits":
+        from agents.research.risk import DEFAULT_LIMITS
+
         return {
             "label": PAPER_LABEL,
             "limits": DEFAULT_LIMITS.describe(),
@@ -132,6 +128,8 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
         }
 
     if path == "/api/forecasts":
+        from agents.research.journal import ForecastJournal
+
         limit = _parse_limit(query)
         with ForecastJournal(app.forecast_db_path) as journal:
             return {
@@ -142,6 +140,8 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
             }
 
     if path == "/api/paper/portfolio":
+        from agents.research.paper_trading import PaperTradingJournal
+
         with PaperTradingJournal(app.paper_db_path) as journal:
             positions = journal.get_open_positions()
             return {
@@ -152,6 +152,8 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
             }
 
     if path == "/api/paper/history":
+        from agents.research.paper_trading import PaperTradingJournal
+
         limit = _parse_limit(query)
         with PaperTradingJournal(app.paper_db_path) as journal:
             return {
@@ -162,6 +164,9 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
             }
 
     if path == "/api/summary":
+        from agents.research.journal import ForecastJournal
+        from agents.research.paper_trading import PaperTradingJournal
+
         with ForecastJournal(app.forecast_db_path) as forecasts:
             forecast_rows = forecasts.list_forecasts(limit=250)
         with PaperTradingJournal(app.paper_db_path) as paper:
@@ -253,8 +258,8 @@ def run_server(host: str, port: int, app: OperatorApp) -> None:
     """Run the local operator UI server until interrupted."""
     server = ThreadingHTTPServer((host, port), make_handler(app))
     url_host = "localhost" if host in {"127.0.0.1", "0.0.0.0"} else host
-    print(f"Operator UI: http://{url_host}:{port}")
-    print("Mode: read-only research + PAPER/SIMULATED ledger")
+    print(f"Operator UI: http://{url_host}:{port}", flush=True)
+    print("Mode: read-only research + PAPER/SIMULATED ledger", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
