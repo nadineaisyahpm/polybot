@@ -19,6 +19,7 @@ The package is split so that offline work needs **zero third-party packages**:
 | `agents/research/risk.py`      | No                | Paper-trading risk guardrails (stdlib)   |
 | `agents/research/paper_trading.py` | No            | SQLite paper-trade ledger (stdlib only)  |
 | `agents/research/connector.py` | No                | Forecast -> risk -> paper-trade bridge   |
+| `scripts/python/operator_ui.py` | No               | Read-only local operator UI              |
 | `agents/research/market_data.py` | **Yes**         | Public Gamma API client (network)        |
 
 `agents/research/__init__.py` uses lazy imports (PEP 562), so
@@ -181,6 +182,34 @@ Existing Milestone 2 paper databases are migrated automatically (the
 `source`/`forecast_id`/`confidence` columns are added in place); legacy rows
 default to `manual` provenance.
 
+## Read-only operator UI (Milestone 3)
+
+Run a local browser UI over the forecast journal and paper-trading ledger:
+
+```bash
+python3 scripts/python/operator_ui.py
+```
+
+Then open:
+
+```text
+http://localhost:8765
+```
+
+The UI shows saved forecasts, open simulated positions, paper trade history,
+aggregate exposure, realized paper P&L, and risk limits. It is read-only: it
+does not create forecasts, record trades, read wallet fields, or call trading
+APIs.
+
+Optional paths:
+
+```bash
+python3 scripts/python/operator_ui.py \
+  --forecast-db-path local_db_research.sqlite3 \
+  --paper-db-path local_db_paper_trading.sqlite3 \
+  --port 8765
+```
+
 How it works:
 
 - The ledger is **append-only**. Positions, exposure, average cost, and realized
@@ -197,7 +226,7 @@ How it works:
 # Tests (no third-party deps required)
 python3 -m unittest tests.test_research_ranking tests.test_research_journal \
     tests.test_research_risk tests.test_research_paper_trading \
-    tests.test_research_connector
+    tests.test_research_connector tests.test_operator_ui
 
 # Or discover all research tests at once
 python3 -m unittest discover -s tests -p "test_research_*.py"
@@ -205,7 +234,7 @@ python3 -m unittest discover -s tests -p "test_research_*.py"
 # Tests under pytest (if installed), matching the build brief
 python3 -m pytest tests/test_research_journal.py tests/test_research_ranking.py \
     tests/test_research_risk.py tests/test_research_paper_trading.py \
-    tests/test_research_connector.py
+    tests/test_research_connector.py tests/test_operator_ui.py
 
 # Smoke test the live scan (requires network + httpx)
 python3 scripts/python/research_cli.py scan --limit 5
