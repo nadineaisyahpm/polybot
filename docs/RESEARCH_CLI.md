@@ -235,6 +235,20 @@ Safety:
 - The `agent_runs` table stores `memo` and `risk` as JSON text so the chain of
   decisions is fully replayable.
 
+## Local chat-agent shell (Milestone 5)
+
+For a conversational interface over the same safe tools, see
+[`docs/CHAT_AGENT.md`](CHAT_AGENT.md):
+
+```bash
+python3 scripts/python/chat_agent.py
+```
+
+The shell maps simple messages ("show forecasts", "research market 540819",
+"run paper agent for market 540819 at price 0.57 size 10") to the existing
+research, journal, paper-trading, and workflow tools. It is rule-based (no LLM
+yet) and never trades real money.
+
 ## Read-only operator UI (Milestone 3)
 
 Run a local browser UI over the forecast journal and paper-trading ledger:

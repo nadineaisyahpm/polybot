@@ -15,7 +15,9 @@ from agents.research.paper_trading import PaperTradingJournal
 from agents.research.runs import AgentRunsJournal
 from scripts.python.operator_ui import (
     OperatorApp,
+    build_chat_payload,
     build_payload,
+    chat_response_to_dict,
     forecast_to_dict,
     position_to_dict,
     run_to_dict,
@@ -158,6 +160,40 @@ class TestOperatorUiRunsApi(unittest.TestCase):
         self.assertEqual(payload["forecast_id"], 3)
         self.assertEqual(payload["paper_trade_id"], 4)
         self.assertIn("PAPER_TRADE", payload["memo"])
+
+
+class TestOperatorUiChatApi(unittest.TestCase):
+    def test_chat_payload_uses_local_chat_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            forecast_db = os.path.join(tmp, "forecasts.sqlite3")
+            paper_db = os.path.join(tmp, "paper.sqlite3")
+            runs_db = os.path.join(tmp, "runs.sqlite3")
+            app = OperatorApp(forecast_db, paper_db, runs_db)
+
+            payload = build_chat_payload("show forecasts", app)
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["intent"], "SHOW_FORECASTS")
+            self.assertIn("No forecasts", payload["message"])
+
+    def test_empty_chat_message_is_rejected(self):
+        app = OperatorApp(":memory:", ":memory:", ":memory:")
+        payload = build_chat_payload("  ", app)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["intent"], "UNKNOWN")
+
+    def test_chat_response_to_dict_serializes_intent(self):
+        from agents.chat.agent import ChatResponse
+        from agents.chat.intents import Intent
+
+        payload = chat_response_to_dict(
+            ChatResponse(text="hi", intent=Intent.HELP, ok=True, data={"x": 1})
+        )
+
+        self.assertEqual(payload["message"], "hi")
+        self.assertEqual(payload["intent"], "HELP")
+        self.assertEqual(payload["data"], {"x": 1})
 
 
 if __name__ == "__main__":

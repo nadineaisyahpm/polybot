@@ -112,6 +112,17 @@ def trade_to_dict(trade: PaperTrade) -> dict[str, Any]:
     }
 
 
+def chat_response_to_dict(response: Any) -> dict[str, Any]:
+    """Serialize a chat-agent response for JSON responses."""
+    intent = getattr(response, "intent", None)
+    return {
+        "message": response.text,
+        "intent": getattr(intent, "value", str(intent)),
+        "ok": bool(response.ok),
+        "data": response.data,
+    }
+
+
 def _parse_limit(query: dict[str, list[str]], default: int = 50) -> int:
     raw = query.get("limit", [str(default)])[0]
     try:
@@ -236,6 +247,27 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
     raise KeyError(path)
 
 
+def build_chat_payload(message: str, app: "OperatorApp") -> dict[str, Any]:
+    """Run one chat message through the Python chat agent."""
+    if not message or not str(message).strip():
+        return {
+            "message": "Say something like 'show portfolio' or 'help'.",
+            "intent": "UNKNOWN",
+            "ok": False,
+            "data": {},
+        }
+
+    from agents.chat.agent import ChatAgent
+
+    agent = ChatAgent(
+        forecast_db_path=app.forecast_db_path,
+        paper_db_path=app.paper_db_path,
+        runs_db_path=app.runs_db_path,
+        timeout=app.timeout,
+    )
+    return chat_response_to_dict(agent.handle(str(message)))
+
+
 class OperatorApp:
     """Configuration holder for the local UI server."""
 
@@ -244,10 +276,12 @@ class OperatorApp:
         forecast_db_path: str,
         paper_db_path: str,
         runs_db_path: str = RUNS_DB_PATH,
+        timeout: float | None = None,
     ) -> None:
         self.forecast_db_path = forecast_db_path
         self.paper_db_path = paper_db_path
         self.runs_db_path = runs_db_path
+        self.timeout = timeout
 
 
 def make_handler(app: OperatorApp):
@@ -280,6 +314,32 @@ def make_handler(app: OperatorApp):
                 self._send_json(payload)
                 return
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+        def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != "/api/chat":
+                self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            try:
+                raw_body = self.rfile.read(length) if length > 0 else b"{}"
+                body = json.loads(raw_body.decode("utf-8"))
+                payload = build_chat_payload(str(body.get("message", "")), app)
+            except json.JSONDecodeError:
+                self._send_json(
+                    {"error": "invalid JSON body"}, HTTPStatus.BAD_REQUEST
+                )
+                return
+            except Exception as err:
+                self._send_json(
+                    {"error": f"{type(err).__name__}: {err}"},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self._send_json(payload)
 
         def log_message(self, format: str, *args: Any) -> None:
             # Keep server output quiet except for explicit startup messages.
@@ -346,6 +406,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=RUNS_DB_PATH,
         help="Agent runs SQLite path.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="HTTP timeout in seconds for chat actions that call the public API.",
+    )
     return parser
 
 
@@ -355,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         forecast_db_path=args.forecast_db_path,
         paper_db_path=args.paper_db_path,
         runs_db_path=args.runs_db_path,
+        timeout=args.timeout,
     )
     run_server(args.host, args.port, app)
     return 0
@@ -555,6 +622,45 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 13px;
     }
+    .chatlog {
+      padding: 12px 14px;
+      display: grid;
+      gap: 10px;
+      max-height: 360px;
+      overflow: auto;
+      border-bottom: 1px solid var(--line);
+    }
+    .message {
+      border: 1px solid var(--line);
+      padding: 10px;
+      background: #fbfcfe;
+      font-size: 13px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .message.user {
+      border-color: #99f6e4;
+      background: #f0fdfa;
+    }
+    .message.agent.bad {
+      border-color: #fecaca;
+      background: #fef2f2;
+    }
+    .chatbar {
+      display: flex;
+      gap: 8px;
+      padding: 12px 14px;
+    }
+    .chatbar input {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      padding: 0 10px;
+      font: inherit;
+      font-size: 13px;
+      background: var(--surface);
+      color: var(--text);
+    }
     .error {
       margin-bottom: 16px;
       border: 1px solid #fecaca;
@@ -641,6 +747,19 @@ INDEX_HTML = r"""<!doctype html>
       <aside>
         <section>
           <div class="section-head">
+            <h2>Chat Agent</h2>
+            <span class="tag">Local tools</span>
+          </div>
+          <div id="chat-log" class="chatlog">
+            <div class="message agent">Ask Polybot: show portfolio, show agent runs, scan markets, research market &lt;id&gt;, or help.</div>
+          </div>
+          <form id="chat-form" class="chatbar">
+            <input id="chat-input" autocomplete="off" placeholder="Message Polybot">
+            <button type="submit">Send</button>
+          </form>
+        </section>
+        <section>
+          <div class="section-head">
             <h2>Paper Portfolio</h2>
             <span class="tag">Simulated</span>
           </div>
@@ -677,6 +796,26 @@ INDEX_HTML = r"""<!doctype html>
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || response.statusText);
       return body;
+    }
+
+    async function postJSON(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || response.statusText);
+      return body;
+    }
+
+    function addMessage(role, message, ok = true) {
+      const log = $("chat-log");
+      const div = document.createElement("div");
+      div.className = `message ${role}${role === "agent" && !ok ? " bad" : ""}`;
+      div.textContent = message;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
     }
 
     function renderForecasts(rows) {
@@ -799,6 +938,21 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     $("refresh").addEventListener("click", refresh);
+    $("chat-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = $("chat-input");
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      addMessage("user", message);
+      try {
+        const response = await postJSON("/api/chat", { message });
+        addMessage("agent", response.message, response.ok);
+        await refresh();
+      } catch (error) {
+        addMessage("agent", error.message, false);
+      }
+    });
     refresh();
   </script>
 </body>
