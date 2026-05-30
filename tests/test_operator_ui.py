@@ -122,6 +122,52 @@ class TestOperatorUiPayloads(unittest.TestCase):
             build_payload("/api/nope", {}, app)
 
 
+class TestChatPayloadShape(unittest.TestCase):
+    """Lock the /api/chat response shape the operator UI cards depend on."""
+
+    def test_chat_payload_for_help_includes_intent_and_ok(self):
+        from scripts.python.operator_ui import build_chat_payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = OperatorApp(
+                forecast_db_path=os.path.join(tmp, "f.sqlite3"),
+                paper_db_path=os.path.join(tmp, "p.sqlite3"),
+                runs_db_path=os.path.join(tmp, "r.sqlite3"),
+            )
+            payload = build_chat_payload("help", app)
+        self.assertIn("message", payload)
+        self.assertEqual(payload["intent"], "HELP")
+        self.assertTrue(payload["ok"])
+        self.assertIsInstance(payload["data"], dict)
+
+    def test_chat_payload_for_empty_message_is_unknown(self):
+        from scripts.python.operator_ui import build_chat_payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = OperatorApp(
+                forecast_db_path=os.path.join(tmp, "f.sqlite3"),
+                paper_db_path=os.path.join(tmp, "p.sqlite3"),
+                runs_db_path=os.path.join(tmp, "r.sqlite3"),
+            )
+            payload = build_chat_payload("   ", app)
+        self.assertEqual(payload["intent"], "UNKNOWN")
+        self.assertFalse(payload["ok"])
+
+    def test_chat_payload_for_show_portfolio_works_offline(self):
+        from scripts.python.operator_ui import build_chat_payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = OperatorApp(
+                forecast_db_path=os.path.join(tmp, "f.sqlite3"),
+                paper_db_path=os.path.join(tmp, "p.sqlite3"),
+                runs_db_path=os.path.join(tmp, "r.sqlite3"),
+            )
+            payload = build_chat_payload("show portfolio", app)
+        self.assertEqual(payload["intent"], "SHOW_PORTFOLIO")
+        self.assertTrue(payload["ok"])
+        self.assertIn("PAPER/SIMULATED", payload["message"])
+
+
 class TestOperatorUiRunsApi(unittest.TestCase):
     def test_runs_payload_reflects_journal(self):
         with tempfile.TemporaryDirectory() as tmp:

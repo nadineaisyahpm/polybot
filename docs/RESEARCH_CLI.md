@@ -249,6 +249,11 @@ The shell maps simple messages ("show forecasts", "research market 540819",
 research, journal, paper-trading, and workflow tools. It is rule-based (no LLM
 yet) and never trades real money.
 
+The same chat agent is also the primary surface in the operator UI: chat sits
+at the top of the main column with suggested prompt buttons, scan-result
+cards, and a browser-side `research #N` shortcut for drilling into the most
+recent scan. See [`docs/CHAT_AGENT.md`](CHAT_AGENT.md).
+
 ## Read-only operator UI (Milestone 3)
 
 Run a local browser UI over the forecast journal and paper-trading ledger:

@@ -48,6 +48,56 @@ the intent parsing and tool dispatch through `ChatAgent.handle(...)`; the UI
 only displays the response. Chat history is kept in the browser for the current
 page session only.
 
+Chat is the primary surface in the UI: it sits at the top of the main column
+above Agent Runs and the Forecast Journal. Paper Portfolio and Risk Limits stay
+in the side column so the trading-pipeline state is always visible while you
+operate it through chat.
+
+### Suggested prompts
+
+A row of one-click buttons sits above the chat log so common actions don't
+require typing:
+
+- **Help** — reminds you what the agent can do.
+- **Show forecasts** — list saved forecasts.
+- **Show portfolio** — open `PAPER/SIMULATED` positions.
+- **Show agent runs** — most recent audit-log rows.
+- **Scan markets** — top public markets (needs network).
+
+Clicking any button sends that exact message through `POST /api/chat`. The
+agent's reply is rendered with an intent tag, an OK / ERROR tag, and the
+conversational text. After each successful reply the dashboard auto-refreshes
+so any forecast / paper trade / run produced by the chat action shows up
+immediately in the side panels.
+
+### Scan result cards
+
+When the agent's reply carries `data.markets` (the response from
+`SCAN_MARKETS`), the UI renders one card per market with the rank, title,
+market id, implied probability, and score. Each card has a **Research this**
+button that sends `research market <id>` for you.
+
+### "Research #N" after a scan
+
+After a scan you can also type:
+
+```text
+research #1
+research number 2
+```
+
+The browser translates `#N` into the matching market id from the most recent
+scan results held in browser memory only (`lastScanMarkets`) and sends
+`research market <id>`. If you ask for `#N` before any scan, the agent replies
+locally with:
+
+```text
+Run "scan markets" first, then you can say "research #1".
+```
+
+The Python intent parser is intentionally not aware of `#N`: chat references
+are client-side only so the parser stays simple and stateless.
+
 ## Supported intents
 
 | Intent             | Example message                                              | Needs network? |

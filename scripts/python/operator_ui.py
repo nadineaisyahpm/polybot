@@ -626,7 +626,7 @@ INDEX_HTML = r"""<!doctype html>
       padding: 12px 14px;
       display: grid;
       gap: 10px;
-      max-height: 360px;
+      max-height: 480px;
       overflow: auto;
       border-bottom: 1px solid var(--line);
     }
@@ -636,6 +636,8 @@ INDEX_HTML = r"""<!doctype html>
       background: #fbfcfe;
       font-size: 13px;
       line-height: 1.4;
+    }
+    .message .body {
       white-space: pre-wrap;
     }
     .message.user {
@@ -645,6 +647,63 @@ INDEX_HTML = r"""<!doctype html>
     .message.agent.bad {
       border-color: #fecaca;
       background: #fef2f2;
+    }
+    .message-head {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .message-head .who {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 4px;
+    }
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 10px 14px 2px;
+      border-bottom: 1px solid var(--line);
+    }
+    .suggestions button {
+      min-height: 28px;
+      font-size: 12px;
+      padding: 0 10px;
+    }
+    .cards {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      padding: 10px;
+    }
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      align-items: baseline;
+    }
+    .card-title {
+      font-weight: 650;
+      font-size: 13px;
+    }
+    .card-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .card-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
     }
     .chatbar {
       display: flex;
@@ -748,10 +807,20 @@ INDEX_HTML = r"""<!doctype html>
         <section>
           <div class="section-head">
             <h2>Chat Agent</h2>
-            <span class="tag">Local tools</span>
+            <span class="tag">Local tools · PAPER/SIMULATED</span>
+          </div>
+          <div id="suggestions" class="suggestions">
+            <button type="button" data-prompt="help">Help</button>
+            <button type="button" data-prompt="show forecasts">Show forecasts</button>
+            <button type="button" data-prompt="show portfolio">Show portfolio</button>
+            <button type="button" data-prompt="show agent runs">Show agent runs</button>
+            <button type="button" data-prompt="scan markets">Scan markets</button>
           </div>
           <div id="chat-log" class="chatlog">
-            <div class="message agent">Ask Polybot: show portfolio, show agent runs, scan markets, research market &lt;id&gt;, or help.</div>
+            <div class="message agent">
+              <div class="message-head"><span class="who">agent</span><span class="tag">HELP</span></div>
+              <div class="body">Ask Polybot to operate the research pipeline. Try a suggested prompt, or type a command like "research market &lt;id&gt;" or "run paper agent for market &lt;id&gt; at price &lt;p&gt; size &lt;usdc&gt;". After a scan you can say "research #1" to drill into the top result.</div>
+            </div>
           </div>
           <form id="chat-form" class="chatbar">
             <input id="chat-input" autocomplete="off" placeholder="Message Polybot">
@@ -809,13 +878,131 @@ INDEX_HTML = r"""<!doctype html>
       return body;
     }
 
-    function addMessage(role, message, ok = true) {
+    // Browser-only scratch: the most recent scan results so the user can say
+    // "research #1" without re-typing market ids. Never persisted.
+    let lastScanMarkets = [];
+
+    function appendNode(node) {
       const log = $("chat-log");
-      const div = document.createElement("div");
-      div.className = `message ${role}${role === "agent" && !ok ? " bad" : ""}`;
-      div.textContent = message;
-      log.appendChild(div);
+      log.appendChild(node);
       log.scrollTop = log.scrollHeight;
+    }
+
+    function addUserMessage(message) {
+      const div = document.createElement("div");
+      div.className = "message user";
+      div.innerHTML = `
+        <div class="message-head"><span class="who">you</span></div>
+        <div class="body">${esc(message)}</div>
+      `;
+      appendNode(div);
+    }
+
+    function addLocalAgentMessage(message) {
+      const div = document.createElement("div");
+      div.className = "message agent";
+      div.innerHTML = `
+        <div class="message-head">
+          <span class="who">agent</span>
+          <span class="tag">LOCAL</span>
+        </div>
+        <div class="body">${esc(message)}</div>
+      `;
+      appendNode(div);
+    }
+
+    function renderScanCards(markets) {
+      if (!markets || !markets.length) return "";
+      const cards = markets.map((m, idx) => `
+        <div class="card" data-rank="${idx + 1}">
+          <div class="card-head">
+            <span class="card-title">#${idx + 1}. ${esc(m.question || "(no question)")}</span>
+            <span class="tag">${pct(m.implied_probability)}</span>
+          </div>
+          <div class="card-meta">
+            <span class="mono">[${esc(m.market_id)}]</span> · score ${Number(m.score || 0).toFixed(1)}
+          </div>
+          <div class="card-actions">
+            <button type="button" class="research-btn" data-market-id="${esc(m.market_id)}">Research this</button>
+          </div>
+        </div>
+      `).join("");
+      return `<div class="cards">${cards}</div>`;
+    }
+
+    function addAgentMessage(response) {
+      const ok = response.ok !== false;
+      const div = document.createElement("div");
+      div.className = `message agent${ok ? "" : " bad"}`;
+      const intentTag = response.intent
+        ? `<span class="tag ${tagClass(response.intent)}">${esc(response.intent)}</span>`
+        : "";
+      const okTag = `<span class="tag ${ok ? "good" : "bad"}">${ok ? "OK" : "ERROR"}</span>`;
+      const cardsHtml = renderScanCards(response.data && response.data.markets);
+      div.innerHTML = `
+        <div class="message-head">
+          <span class="who">agent</span>
+          ${intentTag}
+          ${okTag}
+        </div>
+        <div class="body">${esc(response.message || "")}</div>
+        ${cardsHtml}
+      `;
+      appendNode(div);
+      // Wire up "Research this" buttons added in this message.
+      div.querySelectorAll(".research-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = btn.getAttribute("data-market-id");
+          if (id) sendChat(`research market ${id}`);
+        });
+      });
+    }
+
+    // Translate "research #N" / "research number N" into a concrete market id
+    // using the most recent scan results held in browser memory only.
+    function translateScanReference(message) {
+      const match = message.trim().toLowerCase().match(
+        /^research\s+(?:#|number\s+|no\.?\s+)(\d+)\s*$/
+      );
+      if (!match) return { handled: false };
+      const idx = parseInt(match[1], 10) - 1;
+      if (!lastScanMarkets.length) {
+        return {
+          handled: true,
+          localMessage: 'Run "scan markets" first, then you can say "research #1".',
+        };
+      }
+      if (idx < 0 || idx >= lastScanMarkets.length) {
+        return {
+          handled: true,
+          localMessage: `I only have ${lastScanMarkets.length} scan result(s). Try "research #1" through "research #${lastScanMarkets.length}".`,
+        };
+      }
+      return { handled: true, rewritten: `research market ${lastScanMarkets[idx].market_id}` };
+    }
+
+    async function sendChat(rawMessage) {
+      const message = (rawMessage || "").trim();
+      if (!message) return;
+      addUserMessage(message);
+      // Client-only translation for scan references.
+      const translated = translateScanReference(message);
+      if (translated.handled && translated.localMessage) {
+        addLocalAgentMessage(translated.localMessage);
+        return;
+      }
+      const toSend = translated.rewritten || message;
+      try {
+        const response = await postJSON("/api/chat", { message: toSend });
+        addAgentMessage(response);
+        // Remember scan results for the "research #N" shortcut.
+        if (response.intent === "SCAN_MARKETS" && response.ok && response.data && Array.isArray(response.data.markets)) {
+          lastScanMarkets = response.data.markets;
+        }
+        await refresh();
+      } catch (error) {
+        addAgentMessage({ message: error.message, intent: "UNKNOWN", ok: false });
+      }
     }
 
     function renderForecasts(rows) {
@@ -938,20 +1125,15 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     $("refresh").addEventListener("click", refresh);
-    $("chat-form").addEventListener("submit", async (event) => {
+    $("chat-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const input = $("chat-input");
-      const message = input.value.trim();
-      if (!message) return;
+      const message = input.value;
       input.value = "";
-      addMessage("user", message);
-      try {
-        const response = await postJSON("/api/chat", { message });
-        addMessage("agent", response.message, response.ok);
-        await refresh();
-      } catch (error) {
-        addMessage("agent", error.message, false);
-      }
+      sendChat(message);
+    });
+    document.querySelectorAll("#suggestions button[data-prompt]").forEach((btn) => {
+      btn.addEventListener("click", () => sendChat(btn.getAttribute("data-prompt") || ""));
     });
     refresh();
   </script>
