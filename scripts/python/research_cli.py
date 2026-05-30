@@ -57,6 +57,14 @@ from agents.research.connector import (  # noqa: E402
     paper_trade_from_forecast,
 )
 from agents.research.risk import DEFAULT_LIMITS  # noqa: E402
+from agents.research.runs import (  # noqa: E402
+    DEFAULT_DB_PATH as RUNS_DB_PATH,
+    AgentRunsJournal,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_SKIPPED,
+)
+from agents.research.workflow import run_paper_agent  # noqa: E402
 
 # NOTE: ``agents.research.market_data`` (the only httpx-dependent module) is
 # imported lazily inside the commands that actually hit the network, so the
@@ -414,6 +422,67 @@ def cmd_paper_from_forecast(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run_paper_agent(args: argparse.Namespace) -> int:
+    """Run the deterministic single-agent workflow end-to-end."""
+    try:
+        client = _make_market_client(timeout=args.timeout)
+    except MarketDataError as err:
+        print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    with ForecastJournal(args.forecast_db_path) as fj, PaperTradingJournal(
+        args.db_path
+    ) as pj, AgentRunsJournal(args.runs_db_path) as rj:
+        result = run_paper_agent(
+            market_id=args.market_id,
+            price=args.price,
+            size_usdc=args.size,
+            market_client=client,
+            forecast_journal=fj,
+            paper_journal=pj,
+            runs_journal=rj,
+            notes=args.notes,
+        )
+
+    market_id = result.run.market_id
+    forecast_part = (
+        f"Forecast #{result.forecast_id}" if result.forecast_id else "Forecast n/a"
+    )
+    risk_part = (
+        "Risk OK"
+        if result.status == STATUS_COMPLETED
+        else ("Risk REJECTED" if result.status == STATUS_FAILED else "Risk n/a")
+    )
+    if result.paper_trade_id:
+        trade_part = f"Paper Trade #{result.paper_trade_id} [{PAPER_LABEL}]"
+    elif result.status == STATUS_SKIPPED:
+        trade_part = "SKIPPED"
+    else:
+        trade_part = "FAILED"
+
+    print(
+        f"Run #{result.run.id} [{result.status}]: Market {market_id} -> Memo -> "
+        f"{forecast_part} -> {risk_part} -> {trade_part}"
+    )
+
+    if result.memo is not None:
+        print(f"  recommendation: {result.memo.recommendation}")
+        print(f"  reasoning: {result.memo.reasoning}")
+    if result.skipped_reason:
+        print(f"  skipped: {result.skipped_reason}")
+    if result.error:
+        print(f"  error: {result.error}", file=sys.stderr)
+    if result.is_paper_trade:
+        print(
+            f"  NOTE: paper trade is {PAPER_LABEL}. "
+            "No real order placed, no wallet touched."
+        )
+
+    if result.status == STATUS_FAILED:
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="research_cli",
@@ -654,6 +723,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Research forecast SQLite database path (source of the forecast).",
     )
     paper_ff_parser.set_defaults(func=cmd_paper_from_forecast)
+
+    # run-paper-agent (the full deterministic workflow)
+    run_parser = subparsers.add_parser(
+        "run-paper-agent",
+        help=(
+            "Run the deterministic research workflow: fetch market -> memo -> "
+            "forecast -> risk -> SIMULATED paper trade -> recorded run."
+        ),
+    )
+    run_parser.add_argument("--market-id", required=True, help="Public market id.")
+    run_parser.add_argument(
+        "--price",
+        type=float,
+        required=True,
+        help="Entry price per share (0.01..0.99) if a paper trade is attempted.",
+    )
+    run_parser.add_argument(
+        "--size",
+        type=float,
+        required=True,
+        help="USDC notional to commit (simulated) if a paper trade is attempted.",
+    )
+    run_parser.add_argument(
+        "--notes", default=None, help="Optional notes recorded on the agent run."
+    )
+    run_parser.add_argument(
+        "--db-path", default=PAPER_DB_PATH, help="Paper-trading SQLite database path."
+    )
+    run_parser.add_argument(
+        "--forecast-db-path",
+        default=DEFAULT_DB_PATH,
+        help="Research forecast SQLite database path.",
+    )
+    run_parser.add_argument(
+        "--runs-db-path",
+        default=RUNS_DB_PATH,
+        help="Agent-runs SQLite database path.",
+    )
+    run_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="HTTP timeout in seconds for the public API call (default: 20).",
+    )
+    run_parser.set_defaults(func=cmd_run_paper_agent)
 
     return parser
 

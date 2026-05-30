@@ -12,11 +12,13 @@ if _REPO_ROOT not in sys.path:
 from agents.research.connector import paper_trade_from_forecast
 from agents.research.journal import ForecastJournal
 from agents.research.paper_trading import PaperTradingJournal
+from agents.research.runs import AgentRunsJournal
 from scripts.python.operator_ui import (
     OperatorApp,
     build_payload,
     forecast_to_dict,
     position_to_dict,
+    run_to_dict,
     trade_to_dict,
 )
 
@@ -68,6 +70,7 @@ class TestOperatorUiPayloads(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             forecast_db = os.path.join(tmp, "forecasts.sqlite3")
             paper_db = os.path.join(tmp, "paper.sqlite3")
+            runs_db = os.path.join(tmp, "runs.sqlite3")
 
             with ForecastJournal(forecast_db) as forecasts:
                 forecast = forecasts.add_forecast(
@@ -79,7 +82,11 @@ class TestOperatorUiPayloads(unittest.TestCase):
                     notes="agent read",
                 )
 
-            app = OperatorApp(forecast_db_path=forecast_db, paper_db_path=paper_db)
+            app = OperatorApp(
+                forecast_db_path=forecast_db,
+                paper_db_path=paper_db,
+                runs_db_path=runs_db,
+            )
             with ForecastJournal(forecast_db) as forecasts, PaperTradingJournal(
                 paper_db
             ) as paper:
@@ -96,6 +103,7 @@ class TestOperatorUiPayloads(unittest.TestCase):
             self.assertEqual(summary["open_position_count"], 1)
             self.assertEqual(summary["trade_count"], 1)
             self.assertEqual(summary["agent_trade_count"], 1)
+            self.assertEqual(summary["run_count"], 0)
 
             history = build_payload("/api/paper/history", {"limit": ["10"]}, app)
             self.assertEqual(len(history["trades"]), 1)
@@ -107,9 +115,49 @@ class TestOperatorUiPayloads(unittest.TestCase):
             self.assertEqual(portfolio["total_open_exposure"], 10.0)
 
     def test_unknown_api_path_raises_key_error(self):
-        app = OperatorApp(":memory:", ":memory:")
+        app = OperatorApp(":memory:", ":memory:", ":memory:")
         with self.assertRaises(KeyError):
             build_payload("/api/nope", {}, app)
+
+
+class TestOperatorUiRunsApi(unittest.TestCase):
+    def test_runs_payload_reflects_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            forecast_db = os.path.join(tmp, "f.sqlite3")
+            paper_db = os.path.join(tmp, "p.sqlite3")
+            runs_db = os.path.join(tmp, "r.sqlite3")
+            with AgentRunsJournal(runs_db) as runs:
+                run = runs.start_run(market_id="m1", price=0.5, size_usdc=10.0)
+                runs.fail_run(run.id, error="kaboom")
+
+            app = OperatorApp(forecast_db, paper_db, runs_db)
+            payload = build_payload("/api/runs", {"limit": ["10"]}, app)
+            self.assertEqual(len(payload["runs"]), 1)
+            self.assertEqual(payload["runs"][0]["status"], "FAILED")
+            self.assertEqual(payload["runs"][0]["error"], "kaboom")
+            self.assertEqual(payload["runs"][0]["market_id"], "m1")
+
+            summary = build_payload("/api/summary", {}, app)
+            self.assertEqual(summary["run_count"], 1)
+            self.assertEqual(summary["failed_run_count"], 1)
+            self.assertEqual(summary["completed_run_count"], 0)
+
+    def test_run_to_dict_includes_payloads(self):
+        with AgentRunsJournal(":memory:") as runs:
+            run = runs.start_run(market_id="m1", price=0.5, size_usdc=10.0)
+            done = runs.complete_run(
+                run.id,
+                forecast_id=3,
+                paper_trade_id=4,
+                memo={"recommendation": "PAPER_TRADE"},
+                risk={"rejected": False},
+                recommendation="PAPER_TRADE",
+            )
+            payload = run_to_dict(done)
+        self.assertEqual(payload["status"], "COMPLETED")
+        self.assertEqual(payload["forecast_id"], 3)
+        self.assertEqual(payload["paper_trade_id"], 4)
+        self.assertIn("PAPER_TRADE", payload["memo"])
 
 
 if __name__ == "__main__":

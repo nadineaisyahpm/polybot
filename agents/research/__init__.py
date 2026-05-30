@@ -51,6 +51,15 @@ __all__ = [
     "ForecastPaperTradeResult",
     "ForecastNotFoundError",
     "RecommendationGateError",
+    "AgentRun",
+    "AgentRunsJournal",
+    "AgentRunError",
+    "STATUS_STARTED",
+    "STATUS_COMPLETED",
+    "STATUS_SKIPPED",
+    "STATUS_FAILED",
+    "run_paper_agent",
+    "WorkflowResult",
 ]
 
 # Map each public name to the submodule that defines it. ``market_data`` is the
@@ -82,6 +91,15 @@ _LAZY_EXPORTS = {
     "ForecastPaperTradeResult": "agents.research.connector",
     "ForecastNotFoundError": "agents.research.connector",
     "RecommendationGateError": "agents.research.connector",
+    "AgentRun": "agents.research.runs",
+    "AgentRunsJournal": "agents.research.runs",
+    "AgentRunError": "agents.research.runs",
+    "STATUS_STARTED": "agents.research.runs",
+    "STATUS_COMPLETED": "agents.research.runs",
+    "STATUS_SKIPPED": "agents.research.runs",
+    "STATUS_FAILED": "agents.research.runs",
+    "run_paper_agent": "agents.research.workflow",
+    "WorkflowResult": "agents.research.workflow",
 }
 
 

@@ -19,8 +19,14 @@ The package is split so that offline work needs **zero third-party packages**:
 | `agents/research/risk.py`      | No                | Paper-trading risk guardrails (stdlib)   |
 | `agents/research/paper_trading.py` | No            | SQLite paper-trade ledger (stdlib only)  |
 | `agents/research/connector.py` | No                | Forecast -> risk -> paper-trade bridge   |
+| `agents/research/runs.py`      | No                | SQLite agent-run audit log (stdlib only) |
+| `agents/research/workflow.py`  | No*               | Deterministic agent workflow runner      |
 | `scripts/python/operator_ui.py` | No               | Read-only local operator UI              |
 | `agents/research/market_data.py` | **Yes**         | Public Gamma API client (network)        |
+
+`*` The workflow module itself is stdlib-only, but a real run needs a
+`MarketFetcher` implementation. The default `MarketDataClient` is the one that
+requires `httpx`; tests inject a stub instead.
 
 `agents/research/__init__.py` uses lazy imports (PEP 562), so
 `import agents.research` does **not** import `httpx`. Only accessing
@@ -182,6 +188,53 @@ Existing Milestone 2 paper databases are migrated automatically (the
 `source`/`forecast_id`/`confidence` columns are added in place); legacy rows
 default to `manual` provenance.
 
+## Agent runs and `run-paper-agent` (Milestone 3.5 / 4 foundation)
+
+Every invocation of the deterministic research workflow is recorded in a
+separate local SQLite table (`agent_runs` in `local_db_agent_runs.sqlite3` by
+default). This is the audit trail a future chat agent will rely on: each
+user-facing action becomes one auditable run with a status and JSON-encoded
+payloads.
+
+Statuses:
+
+- `STARTED` — row created at workflow entry (transient).
+- `COMPLETED` — memo recommended `PAPER_TRADE` and a simulated trade was
+  recorded.
+- `SKIPPED` — memo recommended `WATCH` or `NO_TRADE`; no trade attempted.
+- `FAILED` — fetch error, validation error, risk-guardrail rejection, or any
+  unexpected exception. The `error` column holds a useful message.
+
+Run the workflow end-to-end:
+
+```bash
+python scripts/python/research_cli.py run-paper-agent \
+    --market-id <id> --price 0.57 --size 10
+```
+
+Output is a concise chain summary:
+
+```text
+Run #12 [COMPLETED]: Market 253123 -> Memo -> Forecast #7 -> Risk OK -> Paper Trade #4 [PAPER/SIMULATED]
+```
+
+Optional flags:
+
+- `--forecast-db-path` (default `local_db_research.sqlite3`)
+- `--db-path` (paper-trading DB, default `local_db_paper_trading.sqlite3`)
+- `--runs-db-path` (default `local_db_agent_runs.sqlite3`)
+- `--timeout` (HTTP timeout in seconds)
+- `--notes` (free-text notes stored on the run row)
+
+Safety:
+
+- The workflow never re-raises after starting a run; every invocation produces
+  exactly one terminal row.
+- A paper trade is always labeled `PAPER/SIMULATED`. No real order is placed,
+  no wallet is read, no authenticated CLOB endpoint is called.
+- The `agent_runs` table stores `memo` and `risk` as JSON text so the chain of
+  decisions is fully replayable.
+
 ## Read-only operator UI (Milestone 3)
 
 Run a local browser UI over the forecast journal and paper-trading ledger:
@@ -197,9 +250,10 @@ http://localhost:8765
 ```
 
 The UI shows saved forecasts, open simulated positions, paper trade history,
-aggregate exposure, realized paper P&L, and risk limits. It is read-only: it
-does not create forecasts, record trades, read wallet fields, or call trading
-APIs.
+aggregate exposure, realized paper P&L, agent run records (status, market,
+forecast id, paper trade id, started/completed time, and any error), and risk
+limits. It is read-only: it does not create forecasts, record trades, read
+wallet fields, or call trading APIs.
 
 Optional paths:
 
@@ -207,6 +261,7 @@ Optional paths:
 python3 scripts/python/operator_ui.py \
   --forecast-db-path local_db_research.sqlite3 \
   --paper-db-path local_db_paper_trading.sqlite3 \
+  --runs-db-path local_db_agent_runs.sqlite3 \
   --port 8765
 ```
 
@@ -226,7 +281,8 @@ How it works:
 # Tests (no third-party deps required)
 python3 -m unittest tests.test_research_ranking tests.test_research_journal \
     tests.test_research_risk tests.test_research_paper_trading \
-    tests.test_research_connector tests.test_operator_ui
+    tests.test_research_connector tests.test_research_runs \
+    tests.test_research_workflow tests.test_operator_ui
 
 # Or discover all research tests at once
 python3 -m unittest discover -s tests -p "test_research_*.py"

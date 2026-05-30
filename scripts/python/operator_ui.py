@@ -25,11 +25,13 @@ if _REPO_ROOT not in sys.path:
 
 FORECAST_DB_PATH = "local_db_research.sqlite3"
 PAPER_DB_PATH = "local_db_paper_trading.sqlite3"
+RUNS_DB_PATH = "local_db_agent_runs.sqlite3"
 PAPER_LABEL = "PAPER/SIMULATED"
 
 if TYPE_CHECKING:
     from agents.research.journal import ForecastRecord
     from agents.research.paper_trading import PaperTrade, Position
+    from agents.research.runs import AgentRun
 
 
 def _as_float(value: Any) -> float | None:
@@ -64,6 +66,27 @@ def position_to_dict(position: Position) -> dict[str, Any]:
         "average_price": _as_float(position.average_price),
         "exposure": float(position.exposure),
         "realized_pnl": float(position.realized_pnl),
+    }
+
+
+def run_to_dict(run: "AgentRun") -> dict[str, Any]:
+    """Serialize an agent-run row for JSON responses."""
+    return {
+        "id": run.id,
+        "status": run.status,
+        "market_id": run.market_id,
+        "price": _as_float(run.price),
+        "size_usdc": _as_float(run.size_usdc),
+        "recommendation": run.recommendation,
+        "forecast_id": run.forecast_id,
+        "paper_trade_id": run.paper_trade_id,
+        "scanner": run.scanner,
+        "memo": run.memo,
+        "risk": run.risk,
+        "error": run.error,
+        "notes": run.notes,
+        "started_at": run.started_at,
+        "completed_at": run.completed_at,
     }
 
 
@@ -106,7 +129,17 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
             "paper_label": PAPER_LABEL,
             "forecast_db_path": app.forecast_db_path,
             "paper_db_path": app.paper_db_path,
+            "runs_db_path": app.runs_db_path,
         }
+
+    if path == "/api/runs":
+        from agents.research.runs import AgentRunsJournal
+
+        limit = _parse_limit(query)
+        with AgentRunsJournal(app.runs_db_path) as runs:
+            return {
+                "runs": [run_to_dict(run) for run in runs.list_runs(limit=limit)]
+            }
 
     if path == "/api/risk-limits":
         from agents.research.risk import DEFAULT_LIMITS
@@ -166,15 +199,19 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
     if path == "/api/summary":
         from agents.research.journal import ForecastJournal
         from agents.research.paper_trading import PaperTradingJournal
+        from agents.research.runs import (
+            STATUS_COMPLETED,
+            STATUS_FAILED,
+            STATUS_SKIPPED,
+            AgentRunsJournal,
+        )
 
         with ForecastJournal(app.forecast_db_path) as forecasts:
             forecast_rows = forecasts.list_forecasts(limit=250)
         with PaperTradingJournal(app.paper_db_path) as paper:
             positions = paper.get_open_positions()
             trades = paper.history(limit=250)
-            return {
-                "paper_label": PAPER_LABEL,
-                "forecast_count": len(forecast_rows),
+            paper_summary = {
                 "open_position_count": len(positions),
                 "trade_count": len(trades),
                 "total_open_exposure": float(paper.total_exposure()),
@@ -184,6 +221,17 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
                     1 for trade in trades if trade.source == "manual_override"
                 ),
             }
+        with AgentRunsJournal(app.runs_db_path) as runs_journal:
+            runs = runs_journal.list_runs(limit=250)
+        return {
+            "paper_label": PAPER_LABEL,
+            "forecast_count": len(forecast_rows),
+            **paper_summary,
+            "run_count": len(runs),
+            "completed_run_count": sum(1 for r in runs if r.status == STATUS_COMPLETED),
+            "skipped_run_count": sum(1 for r in runs if r.status == STATUS_SKIPPED),
+            "failed_run_count": sum(1 for r in runs if r.status == STATUS_FAILED),
+        }
 
     raise KeyError(path)
 
@@ -191,9 +239,15 @@ def build_payload(path: str, query: dict[str, list[str]], app: "OperatorApp") ->
 class OperatorApp:
     """Configuration holder for the local UI server."""
 
-    def __init__(self, forecast_db_path: str, paper_db_path: str) -> None:
+    def __init__(
+        self,
+        forecast_db_path: str,
+        paper_db_path: str,
+        runs_db_path: str = RUNS_DB_PATH,
+    ) -> None:
         self.forecast_db_path = forecast_db_path
         self.paper_db_path = paper_db_path
+        self.runs_db_path = runs_db_path
 
 
 def make_handler(app: OperatorApp):
@@ -287,6 +341,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=PAPER_DB_PATH,
         help="Paper-trading SQLite path.",
     )
+    parser.add_argument(
+        "--runs-db-path",
+        default=RUNS_DB_PATH,
+        help="Agent runs SQLite path.",
+    )
     return parser
 
 
@@ -295,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     app = OperatorApp(
         forecast_db_path=args.forecast_db_path,
         paper_db_path=args.paper_db_path,
+        runs_db_path=args.runs_db_path,
     )
     run_server(args.host, args.port, app)
     return 0
@@ -379,7 +439,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .stats {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 18px;
     }
@@ -539,6 +599,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="stat"><label>Paper Trades</label><strong id="trade-count">0</strong></div>
       <div class="stat"><label>Open Exposure</label><strong id="exposure">$0.00</strong></div>
       <div class="stat"><label>Realized P&L</label><strong id="pnl">$0.00</strong></div>
+      <div class="stat"><label>Agent Runs</label><strong id="run-count">0</strong></div>
     </div>
     <div class="layout">
       <div>
@@ -569,6 +630,13 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div id="history" class="list"></div>
         </section>
+        <section>
+          <div class="section-head">
+            <h2>Agent Runs</h2>
+            <span class="tag">Audit trail</span>
+          </div>
+          <div id="runs" class="list"></div>
+        </section>
       </div>
       <aside>
         <section>
@@ -598,9 +666,9 @@ INDEX_HTML = r"""<!doctype html>
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
     const tagClass = (value) => {
-      if (value === "PAPER_TRADE" || value === "agent_recommended") return "good";
-      if (value === "WATCH" || value === "manual_override") return "warn";
-      if (value === "NO_TRADE") return "bad";
+      if (value === "PAPER_TRADE" || value === "agent_recommended" || value === "COMPLETED") return "good";
+      if (value === "WATCH" || value === "manual_override" || value === "SKIPPED") return "warn";
+      if (value === "NO_TRADE" || value === "FAILED") return "bad";
       return "";
     };
 
@@ -671,6 +739,32 @@ INDEX_HTML = r"""<!doctype html>
       `).join("");
     }
 
+    function renderRuns(rows) {
+      const target = $("runs");
+      if (!rows.length) {
+        target.innerHTML = `<div class="empty">No agent runs yet.</div>`;
+        return;
+      }
+      target.innerHTML = rows.map((row) => `
+        <div class="rowitem">
+          <div class="rowtop">
+            <strong>#${row.id} ${esc(row.market_id)}</strong>
+            <span class="tag ${tagClass(row.status)}">${esc(row.status)}</span>
+          </div>
+          <div class="muted">
+            Recommendation ${esc(row.recommendation)} ·
+            Forecast ${row.forecast_id ? "#" + row.forecast_id : "n/a"} ·
+            Paper trade ${row.paper_trade_id ? "#" + row.paper_trade_id : "n/a"}
+          </div>
+          <div class="muted">
+            Started ${esc(row.started_at)}${row.completed_at ? " · Completed " + esc(row.completed_at) : ""}
+          </div>
+          ${row.error ? `<div class="muted" style="color:var(--bad)">Error: ${esc(row.error)}</div>` : ""}
+          ${row.notes ? `<div class="muted">Notes: ${esc(row.notes)}</div>` : ""}
+        </div>
+      `).join("");
+    }
+
     function renderLimits(rows) {
       $("limits").innerHTML = rows.map((line) => `<div class="rowitem">${esc(line)}</div>`).join("");
     }
@@ -678,23 +772,26 @@ INDEX_HTML = r"""<!doctype html>
     async function refresh() {
       $("error").style.display = "none";
       try {
-        const [summary, forecasts, portfolio, history, limits] = await Promise.all([
+        const [summary, forecasts, portfolio, history, limits, runs] = await Promise.all([
           getJSON("/api/summary"),
           getJSON("/api/forecasts?limit=50"),
           getJSON("/api/paper/portfolio"),
           getJSON("/api/paper/history?limit=50"),
           getJSON("/api/risk-limits"),
+          getJSON("/api/runs?limit=50"),
         ]);
         $("forecast-count").textContent = summary.forecast_count;
         $("position-count").textContent = summary.open_position_count;
         $("trade-count").textContent = summary.trade_count;
         $("exposure").textContent = money(summary.total_open_exposure);
         $("pnl").textContent = money(summary.total_realized_pnl);
+        $("run-count").textContent = summary.run_count;
         $("updated").textContent = new Date().toLocaleTimeString();
         renderForecasts(forecasts.forecasts);
         renderPositions(portfolio.positions);
         renderHistory(history.trades);
         renderLimits(limits.limits);
+        renderRuns(runs.runs);
       } catch (error) {
         $("error").textContent = error.message;
         $("error").style.display = "block";
